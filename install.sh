@@ -17,13 +17,17 @@ need_root() { [ "$(id -u)" -eq 0 ] || die "Run as root or with sudo (writes to /
 
 need_root
 
+# Prompts must read from the terminal, not stdin: `curl ... | bash` leaves stdin
+# bound to the piped script, so interactive `read` would get EOF.
+[ -r /dev/tty ] || die "No terminal for prompts. Download install.sh and run it directly (e.g. 'sudo bash install.sh'), not piped."
+
 # 1. Dependency check.
 say "Checking dependencies"
 command -v curl >/dev/null || die "curl not found."
 command -v find >/dev/null || die "find not found."
 command -v sudo >/dev/null || die "sudo not found."
 if ! command -v wp >/dev/null; then
-  read -r -p "wp-cli not found. Install it now? [y/N] " ans
+  read -r -p "wp-cli not found. Install it now? [y/N] " ans </dev/tty
   [ "$ans" = "y" ] || die "wp-cli is required. Install it and re-run."
   curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /usr/local/bin/wp \
     || die "wp-cli download failed."
@@ -32,11 +36,11 @@ fi
 
 # 2. Prompt for config.
 say "Configuration"
-read -r -p "SERVER_NAME (unique, e.g. server-1): " SERVER_NAME
+read -r -p "SERVER_NAME (unique, e.g. server-1): " SERVER_NAME </dev/tty
 [ -n "$SERVER_NAME" ] || die "SERVER_NAME is required."
-read -r -p "SITES_ROOT [/home]: " SITES_ROOT_INPUT
+read -r -p "SITES_ROOT [/home]: " SITES_ROOT_INPUT </dev/tty
 SITES_ROOT="${SITES_ROOT_INPUT:-/home}"
-read -r -p "Log file path [/var/log/forge-wp-update.log]: " LOG_INPUT
+read -r -p "Log file path [/var/log/forge-wp-update.log]: " LOG_INPUT </dev/tty
 LOG_PATH="${LOG_INPUT:-/var/log/forge-wp-update.log}"
 
 # 3. Write /etc/forge-wp-update/config.
