@@ -23,3 +23,8 @@ IGNORE_FILENAME=".forge-wp-update-ignore"
 COMMIT_AFTER_UPDATE=""
 GIT_COMMIT_NAME="forge-wp-update"
 GIT_COMMIT_EMAIL="forge-wp-update@localhost"
+
+# Opt-in: push to the tracked remote after a successful commit. Never forced, so
+# a diverged remote rejects the push (logged, run continues). Requires the site
+# owner to have push credentials for the remote. Off by default.
+PUSH_AFTER_COMMIT=""

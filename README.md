@@ -63,6 +63,8 @@ elementor
 
 Set `COMMIT_AFTER_UPDATE=1` in the config to record plugin updates in the site's git repo. After a successful same-major update on a site that is a git repo (repo root assumed to be the site root), the updated plugin directories are committed with a path-scoped commit. Only `wp-content/plugins/<slug>` of the plugins that were updated is committed. Any other modified or staged files are left untouched, and their count is written to the log so you can review them yourself. Set `GIT_COMMIT_NAME` and `GIT_COMMIT_EMAIL` to control the commit author. The feature is off by default.
 
+Set `PUSH_AFTER_COMMIT=1` to push the commit to the tracked remote. The push is never forced, so a remote that has moved ahead rejects it (the rejection is logged and the run continues). The site owner needs push credentials for the remote. Useful when sites deploy by pulling from that remote, so the server and the remote stay in sync.
+
 ## Cron schedule
 
 The installer writes `/etc/cron.d/forge-wp-update` running as root, daily at 04:00. Edit that file to change timing.

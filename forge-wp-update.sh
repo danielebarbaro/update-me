@@ -40,6 +40,8 @@ done
 [ -z "${COMMIT_AFTER_UPDATE+x}" ] && COMMIT_AFTER_UPDATE=""
 [ -z "${GIT_COMMIT_NAME+x}" ] && GIT_COMMIT_NAME="forge-wp-update"
 [ -z "${GIT_COMMIT_EMAIL+x}" ] && GIT_COMMIT_EMAIL="forge-wp-update@localhost"
+# Opt-in: push to the tracked remote after a successful commit (never forced).
+[ -z "${PUSH_AFTER_COMMIT+x}" ] && PUSH_AFTER_COMMIT=""
 
 log() { echo "$(date '+%F %T') [wp-update] $*" >> "$LOG"; }
 
@@ -124,6 +126,14 @@ git_commit_plugins() {
         -c "user.name=$GIT_COMMIT_NAME" -c "user.email=$GIT_COMMIT_EMAIL" \
         commit -m "chore(plugins): same-major update $*" -- "${paths[@]}" >>"$LOG" 2>&1; then
       log "$path: committed plugin update ($*)"
+      if [ -n "$PUSH_AFTER_COMMIT" ]; then
+        # shellcheck disable=SC2024
+        if sudo -u "$owner" -H git -C "$path" push >>"$LOG" 2>&1; then
+          log "$path: pushed plugin update to remote"
+        else
+          log "ERROR: $path git push failed (check remote and credentials)"
+        fi
+      fi
     else
       log "ERROR: $path git commit failed"
     fi

@@ -175,3 +175,48 @@ mkcfg() {
   [[ "$pending" == *"index.php"* ]]                         # other file still dirty
   [[ "$pending" != *"plugins/woocommerce"* ]]               # plugin no longer dirty
 }
+
+# Build a site repo cloned from a bare remote; echoes "<remote> <work>".
+mk_repo_with_remote() {
+  local remote work
+  remote="$(mktemp -d)"; work="$(mktemp -d)"
+  git init --bare -q "$remote"
+  git clone -q "$remote" "$work"
+  git -C "$work" config user.email t@t.test
+  git -C "$work" config user.name tester
+  git -C "$work" checkout -q -b main
+  mkdir -p "$work/wp-content/plugins/woocommerce"
+  echo v1 > "$work/wp-content/plugins/woocommerce/main.php"
+  git -C "$work" add -A; git -C "$work" commit -qm init
+  git -C "$work" push -q -u origin main
+  echo v2 > "$work/wp-content/plugins/woocommerce/main.php"   # dirty the plugin
+  echo "$remote $work"
+}
+
+sudo_passthrough='sudo() { while [ "$1" = "-u" ] || [ "$1" = "-H" ]; do if [ "$1" = "-u" ]; then shift 2; else shift; fi; done; "$@"; }'
+
+@test "git_commit_plugins does not push when PUSH_AFTER_COMMIT is unset" {
+  cfg="$(mkcfg)"
+  read -r remote work <<< "$(mk_repo_with_remote)"
+  env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"; '"$sudo_passthrough"'
+    COMMIT_AFTER_UPDATE=1; PUSH_AFTER_COMMIT=""
+    git_commit_plugins owner "'"$work"'" woocommerce
+  ' _ "$SCRIPT"
+  remote_msg="$(git -C "$remote" log -1 --pretty=%s main)"
+  rm -rf "$remote" "$work" "$cfg"
+  [[ "$remote_msg" == "init" ]]                              # remote unchanged
+}
+
+@test "git_commit_plugins pushes to remote when PUSH_AFTER_COMMIT is set" {
+  cfg="$(mkcfg)"
+  read -r remote work <<< "$(mk_repo_with_remote)"
+  env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"; '"$sudo_passthrough"'
+    COMMIT_AFTER_UPDATE=1; PUSH_AFTER_COMMIT=1
+    git_commit_plugins owner "'"$work"'" woocommerce
+  ' _ "$SCRIPT"
+  remote_msg="$(git -C "$remote" log -1 --pretty=%s main)"
+  rm -rf "$remote" "$work" "$cfg"
+  [[ "$remote_msg" == *"same-major update woocommerce"* ]]   # remote got the commit
+}
