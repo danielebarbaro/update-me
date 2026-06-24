@@ -74,12 +74,14 @@ wp_as() {
 }
 
 # health_check <owner> <path> -> exit 0 if home URL returns a healthy code.
+# A wp-cli failure or an unreadable/empty home URL counts as UNHEALTHY: if we
+# cannot confirm the site is up we must not assume it is, or rollback never fires.
 health_check() {
-  local owner="$1" path="$2" url code
-  url="$(wp_as "$owner" "$path" option get home)"
-  if [ -z "$url" ]; then
-    log "$path: no home url, skipping health check"
-    return 0
+  local owner="$1" path="$2" url code status
+  url="$(wp_as "$owner" "$path" option get home)"; status=$?
+  if [ "$status" -ne 0 ] || [ -z "$url" ]; then
+    log "$path: cannot read home url (wp-cli status=$status), treating as unhealthy"
+    return 1
   fi
   code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$url" 2>>"$LOG")"
   if is_healthy_code "$code"; then
@@ -103,8 +105,13 @@ update_site() {
     done < "$ignore_file"
   fi
 
-  local csv
-  csv="$(wp_as "$owner" "$path" plugin list --update=available --fields=name,version,update_version --format=csv)"
+  local csv status
+  csv="$(wp_as "$owner" "$path" plugin list --update=available --fields=name,version,update_version --format=csv)"; status=$?
+  if [ "$status" -ne 0 ]; then
+    log "ERROR: $path wp-cli failed listing plugins (status=$status), skipping site"
+    FAILURES=$((FAILURES+1))
+    return 0
+  fi
   if [ -z "$csv" ]; then
     log "$path: no plugin updates available"
     return 0

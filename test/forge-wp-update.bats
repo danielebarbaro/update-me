@@ -78,3 +78,41 @@ mkcfg() {
   [[ "$output" == *"no500"* ]]
   rm -f "$cfg"
 }
+
+@test "health_check is unhealthy when wp-cli fails" {
+  cfg="$(mkcfg)"
+  run env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"
+    wp_as() { return 1; }       # simulate wp-cli fatal
+    health_check owner /site && echo healthy || echo unhealthy
+  ' _ "$SCRIPT"
+  rm -f "$cfg"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"unhealthy"* ]]
+}
+
+@test "health_check is unhealthy when home url is empty" {
+  cfg="$(mkcfg)"
+  run env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"
+    wp_as() { echo ""; return 0; }   # wp ok but no home url
+    health_check owner /site && echo healthy || echo unhealthy
+  ' _ "$SCRIPT"
+  rm -f "$cfg"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"unhealthy"* ]]
+}
+
+@test "health_check is healthy on configured code from home url" {
+  cfg="$(mkcfg)"
+  run env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"
+    wp_as() { echo "https://example.test"; return 0; }
+    curl() { echo "200"; }            # stub fetch
+    health_check owner /site && echo healthy || echo unhealthy
+  ' _ "$SCRIPT"
+  rm -f "$cfg"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"healthy"* ]]
+  [[ "$output" != *"unhealthy"* ]]
+}
