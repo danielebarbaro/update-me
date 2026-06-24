@@ -24,7 +24,7 @@ It scans every home under `/home` and finds each WordPress install (nested insta
 Run on each server. Pick a unique `SERVER_NAME` per server.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/forge-wp-update/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/danielebarbaro/update-me/main/install.sh | sudo bash
 ```
 
 The installer checks dependencies, prompts for the server name, sites root, and log path, writes the config, installs the command to `/usr/local/bin/forge-wp-update`, and schedules a root cron entry. It finishes with a dry run.

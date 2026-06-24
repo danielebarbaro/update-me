@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
 # forge-wp-update installer. Run on each Forge server:
-#   curl -fsSL https://raw.githubusercontent.com/<owner>/forge-wp-update/main/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/danielebarbaro/update-me/main/install.sh | sudo bash
 #
 set -uo pipefail
 
-REPO_RAW="${FORGE_WP_UPDATE_REPO_RAW:-https://raw.githubusercontent.com/<owner>/forge-wp-update/main}"
+REPO_RAW="${FORGE_WP_UPDATE_REPO_RAW:-https://raw.githubusercontent.com/danielebarbaro/update-me/main}"
 BIN="/usr/local/bin/forge-wp-update"
 CONFIG_DIR="/etc/forge-wp-update"
 CONFIG="$CONFIG_DIR/config"
