@@ -1,0 +1,18 @@
+# forge-wp-update configuration. Copy to /etc/forge-wp-update/config and edit.
+# This file is sourced by forge-wp-update as bash. Keep it valid bash.
+
+# UNIQUE per server. Used in log lines. e.g. server-1.
+SERVER_NAME="server-1"
+
+# Root scanned for WordPress installs. Forge isolated users each get a home here.
+SITES_ROOT="/home"
+
+# Log file path.
+LOG="/var/log/forge-wp-update.log"
+
+# HTTP status codes treated as healthy after an update. Space separated.
+HEALTHCHECK_CODES="200 301 302"
+
+# Per-site exclude file. A file with this name in a site root lists plugin
+# slugs (one per line) to never auto-update.
+IGNORE_FILENAME=".forge-wp-update-ignore"
