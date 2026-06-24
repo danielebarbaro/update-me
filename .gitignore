@@ -1,0 +1,8 @@
+# local config and logs (never commit)
+config
+*.log
+.DS_Store
+
+# planning docs, never commit
+docs/superpowers/
+.superpowers/
