@@ -36,6 +36,10 @@ done
 # Defaults (override in config if needed).
 [ -z "${HEALTHCHECK_CODES+x}" ] && HEALTHCHECK_CODES="200 301 302"
 [ -z "${IGNORE_FILENAME+x}" ] && IGNORE_FILENAME=".forge-wp-update-ignore"
+# Opt-in: when set, commit updated plugin files to the site's git repo (if any).
+[ -z "${COMMIT_AFTER_UPDATE+x}" ] && COMMIT_AFTER_UPDATE=""
+[ -z "${GIT_COMMIT_NAME+x}" ] && GIT_COMMIT_NAME="forge-wp-update"
+[ -z "${GIT_COMMIT_EMAIL+x}" ] && GIT_COMMIT_EMAIL="forge-wp-update@localhost"
 
 log() { echo "$(date '+%F %T') [wp-update] $*" >> "$LOG"; }
 
@@ -89,6 +93,49 @@ health_check() {
   fi
   log "$path: health check got HTTP $code from $url"
   return 1
+}
+
+# git_commit_plugins <owner> <path> <slug...>: opt-in, best-effort. If the site
+# is a git repo, stage the updated plugin dirs and commit. Never fails the run.
+git_commit_plugins() {
+  local owner="$1" path="$2"; shift 2
+  [ -n "$COMMIT_AFTER_UPDATE" ] || return 0
+  if ! command -v git >/dev/null; then
+    log "$path: git not found, skip commit"
+    return 0
+  fi
+  if ! sudo -u "$owner" -H git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log "$path: not a git repo, skip commit"
+    return 0
+  fi
+  local -a paths=()
+  local slug
+  for slug in "$@"; do paths+=("wp-content/plugins/$slug"); done
+
+  # Commit ONLY the updated plugin paths. A path-scoped commit ignores whatever
+  # else is staged or dirty, so unrelated site changes are never swept in.
+  if [ -z "$(sudo -u "$owner" -H git -C "$path" status --porcelain -- "${paths[@]}" 2>>"$LOG")" ]; then
+    log "$path: no plugin file changes to commit"
+  else
+    # Redirect runs as root (the script's user), which owns $LOG; sudo only drops
+    # privileges for git itself, so SC2024 does not apply here.
+    # shellcheck disable=SC2024
+    if sudo -u "$owner" -H git -C "$path" \
+        -c "user.name=$GIT_COMMIT_NAME" -c "user.email=$GIT_COMMIT_EMAIL" \
+        commit -m "chore(plugins): same-major update $*" -- "${paths[@]}" >>"$LOG" 2>&1; then
+      log "$path: committed plugin update ($*)"
+    else
+      log "ERROR: $path git commit failed"
+    fi
+  fi
+
+  # Report any other pending changes left in the working tree (not committed).
+  local others count
+  others="$(sudo -u "$owner" -H git -C "$path" status --porcelain 2>>"$LOG")"
+  if [ -n "$others" ]; then
+    count="$(printf '%s\n' "$others" | grep -c '')"
+    log "$path: $count other uncommitted file(s) left in repo, not committed (review manually)"
+  fi
 }
 
 # update_site <owner> <path>: filter, apply, verify, rollback on failure.
@@ -159,6 +206,7 @@ update_site() {
 
   if health_check "$owner" "$path"; then
     log "$path: healthy after update"
+    git_commit_plugins "$owner" "$path" "${names[@]}"
   else
     log "ERROR: $path unhealthy after update, rolling back"
     local i

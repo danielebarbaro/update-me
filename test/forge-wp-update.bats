@@ -116,3 +116,62 @@ mkcfg() {
   [[ "$output" == *"healthy"* ]]
   [[ "$output" != *"unhealthy"* ]]
 }
+
+@test "git_commit_plugins is a no-op when COMMIT_AFTER_UPDATE is unset" {
+  cfg="$(mkcfg)"
+  run env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"
+    COMMIT_AFTER_UPDATE=""
+    sudo() { echo "GIT-TOUCHED"; }   # must not run when disabled
+    git_commit_plugins owner /site woocommerce && echo done
+  ' _ "$SCRIPT"
+  rm -f "$cfg"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"done"* ]]
+  [[ "$output" != *"GIT-TOUCHED"* ]]
+}
+
+@test "git_commit_plugins skips when path is not a git repo" {
+  cfg="$(mkcfg)"
+  run env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"
+    COMMIT_AFTER_UPDATE=1
+    sudo() { return 1; }             # rev-parse fails => not a repo
+    git_commit_plugins owner /site woocommerce && echo done
+  ' _ "$SCRIPT"
+  rm -f "$cfg"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"done"* ]]
+}
+
+@test "git_commit_plugins commits only plugin paths, leaves other files" {
+  cfg="$(mkcfg)"
+  repo="$(mktemp -d)"
+  git -C "$repo" init -q
+  git -C "$repo" config user.email t@t.test
+  git -C "$repo" config user.name tester
+  mkdir -p "$repo/wp-content/plugins/woocommerce"
+  echo v1 > "$repo/wp-content/plugins/woocommerce/main.php"
+  echo home > "$repo/index.php"
+  git -C "$repo" add -A; git -C "$repo" commit -qm init
+  # Dirty both a plugin and an unrelated file.
+  echo v2 > "$repo/wp-content/plugins/woocommerce/main.php"
+  echo changed > "$repo/index.php"
+
+  # sudo stub: strip "-u <user>" and "-H", run the rest as the current user.
+  env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"
+    COMMIT_AFTER_UPDATE=1
+    sudo() { while [ "$1" = "-u" ] || [ "$1" = "-H" ]; do
+               if [ "$1" = "-u" ]; then shift 2; else shift; fi; done; "$@"; }
+    git_commit_plugins owner "'"$repo"'" woocommerce
+  ' _ "$SCRIPT"
+
+  last_msg="$(git -C "$repo" log -1 --pretty=%s)"
+  pending="$(git -C "$repo" status --porcelain)"
+  rm -rf "$repo" "$cfg"
+
+  [[ "$last_msg" == *"same-major update woocommerce"* ]]   # plugin committed
+  [[ "$pending" == *"index.php"* ]]                         # other file still dirty
+  [[ "$pending" != *"plugins/woocommerce"* ]]               # plugin no longer dirty
+}

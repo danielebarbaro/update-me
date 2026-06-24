@@ -16,3 +16,10 @@ HEALTHCHECK_CODES="200 301 302"
 # Per-site exclude file. A file with this name in a site root lists plugin
 # slugs (one per line) to never auto-update.
 IGNORE_FILENAME=".forge-wp-update-ignore"
+
+# Opt-in git commit. When set to 1, after a successful same-major update on a
+# site that is a git repo, the updated plugin dirs are staged and committed.
+# Assumes the repo root is the site root. Off by default.
+COMMIT_AFTER_UPDATE=""
+GIT_COMMIT_NAME="forge-wp-update"
+GIT_COMMIT_EMAIL="forge-wp-update@localhost"
