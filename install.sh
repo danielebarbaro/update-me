@@ -34,16 +34,38 @@ if ! command -v wp >/dev/null; then
   chmod 755 /usr/local/bin/wp
 fi
 
-# 2. Prompt for config.
-say "Configuration"
-read -r -p "SERVER_NAME (unique, e.g. server-1): " SERVER_NAME </dev/tty
-[ -n "$SERVER_NAME" ] || die "SERVER_NAME is required."
-read -r -p "SITES_ROOT [/home]: " SITES_ROOT_INPUT </dev/tty
-SITES_ROOT="${SITES_ROOT_INPUT:-/home}"
-read -r -p "Log file path [/var/log/forge-wp-update.log]: " LOG_INPUT </dev/tty
-LOG_PATH="${LOG_INPUT:-/var/log/forge-wp-update.log}"
+# 2. Read the existing config, if any.
+# Re-running the installer must never drop settings someone added by hand, so
+# the current values become the prompt defaults and every key is written back.
+if [ -r "$CONFIG" ]; then
+  say "Reading existing $CONFIG"
+  # shellcheck source=/dev/null
+  . "$CONFIG" || die "Existing config is not valid bash: $CONFIG"
+fi
+SERVER_NAME="${SERVER_NAME:-}"
+SITES_ROOT="${SITES_ROOT:-/home}"
+LOG="${LOG:-/var/log/forge-wp-update.log}"
+HEALTHCHECK_CODES="${HEALTHCHECK_CODES:-200 301 302}"
+IGNORE_FILENAME="${IGNORE_FILENAME:-.forge-wp-update-ignore}"
+# Unset means "not configured yet" and takes the default; an empty value is a
+# deliberate "off" and is kept, hence ${VAR-default} and not ${VAR:-default}.
+UPDATE_THEMES="${UPDATE_THEMES-1}"
+COMMIT_AFTER_UPDATE="${COMMIT_AFTER_UPDATE-}"
+GIT_COMMIT_NAME="${GIT_COMMIT_NAME:-forge-wp-update}"
+GIT_COMMIT_EMAIL="${GIT_COMMIT_EMAIL:-forge-wp-update@localhost}"
+PUSH_AFTER_COMMIT="${PUSH_AFTER_COMMIT-}"
 
-# 3. Write /etc/forge-wp-update/config.
+# 3. Prompt for the values that identify this server. Enter keeps what is shown.
+say "Configuration"
+read -r -p "SERVER_NAME (unique, e.g. server-1)${SERVER_NAME:+ [$SERVER_NAME]}: " INPUT </dev/tty
+SERVER_NAME="${INPUT:-$SERVER_NAME}"
+[ -n "$SERVER_NAME" ] || die "SERVER_NAME is required."
+read -r -p "SITES_ROOT [$SITES_ROOT]: " INPUT </dev/tty
+SITES_ROOT="${INPUT:-$SITES_ROOT}"
+read -r -p "Log file path [$LOG]: " INPUT </dev/tty
+LOG_PATH="${INPUT:-$LOG}"
+
+# 4. Write /etc/forge-wp-update/config.
 say "Writing $CONFIG"
 install -d -m 755 "$CONFIG_DIR"
 umask 177
@@ -51,18 +73,23 @@ cat > "$CONFIG" <<EOF
 SERVER_NAME="$SERVER_NAME"
 SITES_ROOT="$SITES_ROOT"
 LOG="$LOG_PATH"
-HEALTHCHECK_CODES="200 301 302"
-IGNORE_FILENAME=".forge-wp-update-ignore"
+HEALTHCHECK_CODES="$HEALTHCHECK_CODES"
+IGNORE_FILENAME="$IGNORE_FILENAME"
+UPDATE_THEMES="$UPDATE_THEMES"
+COMMIT_AFTER_UPDATE="$COMMIT_AFTER_UPDATE"
+GIT_COMMIT_NAME="$GIT_COMMIT_NAME"
+GIT_COMMIT_EMAIL="$GIT_COMMIT_EMAIL"
+PUSH_AFTER_COMMIT="$PUSH_AFTER_COMMIT"
 EOF
 umask 022
 chmod 600 "$CONFIG"
 
-# 4. Install the script.
+# 5. Install the script.
 say "Installing $BIN"
 curl -fsSL "$REPO_RAW/forge-wp-update.sh" -o "$BIN" || die "Failed to download forge-wp-update.sh"
 chmod 755 "$BIN"
 
-# 5. Install cron (runs as root so it can sudo -u owner; replaced, never duplicated).
+# 6. Install cron (runs as root so it can sudo -u owner; replaced, never duplicated).
 say "Installing cron at $CRON"
 cat > "$CRON" <<EOF
 # forge-wp-update. Managed by install.sh. Daily WordPress updates at 04:00.
@@ -72,7 +99,7 @@ PATH=/usr/local/bin:/usr/bin:/bin
 EOF
 chmod 644 "$CRON"
 
-# 6. Verify with a dry-run.
+# 7. Verify with a dry-run.
 say "Verifying (dry-run)"
 if forge-wp-update --dry-run; then
   say "Install complete. Cron scheduled daily at 04:00. Edit $CRON to change timing."

@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/danielebarbaro/update-me/main/insta
 
 The installer checks dependencies, prompts for the server name, sites root, and log path, writes the config, installs the command to `/usr/local/bin/forge-wp-update`, and schedules a root cron entry. It finishes with a dry run.
 
-Re-running the installer is safe. It updates the config and cron in place without duplicating anything.
+Re-running the installer is safe. It reads the existing config first, offers the current values as prompt defaults (Enter keeps them), and writes every key back, so settings like `UPDATE_THEMES` or `COMMIT_AFTER_UPDATE` survive an upgrade. Cron is replaced in place, never duplicated.
 
 ## Manual usage
 
