@@ -13,13 +13,23 @@ LOG="/var/log/forge-wp-update.log"
 # HTTP status codes treated as healthy after an update. Space separated.
 HEALTHCHECK_CODES="200 301 302"
 
-# Per-site exclude file. A file with this name in a site root lists plugin
-# slugs (one per line) to never auto-update.
+# Per-site exclude file. A file with this name in a site root lists, one entry
+# per line, what to never auto-update on that site:
+#   akismet        a plugin slug
+#   theme:avada    a theme slug
+#   core           the WordPress core minor update
 IGNORE_FILENAME=".forge-wp-update-ignore"
 
+# Theme updates, same-major like plugins. On by default. Set to "" to turn them
+# off for every site on this server. WordPress core minor and patch releases are
+# always applied and have no config switch: exclude a single site with a "core"
+# line in its ignore file. Core MAJOR releases are never applied.
+UPDATE_THEMES="1"
+
 # Opt-in git commit. When set to 1, after a successful same-major update on a
-# site that is a git repo, the updated plugin dirs are staged and committed.
-# Assumes the repo root is the site root. Off by default.
+# site that is a git repo, the updated plugin and theme dirs are staged and
+# committed, one commit per type. Core files are never committed. Assumes the
+# repo root is the site root. Off by default.
 COMMIT_AFTER_UPDATE=""
 GIT_COMMIT_NAME="forge-wp-update"
 GIT_COMMIT_EMAIL="forge-wp-update@localhost"

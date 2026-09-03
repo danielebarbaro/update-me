@@ -65,7 +65,7 @@ chmod 755 "$BIN"
 # 5. Install cron (runs as root so it can sudo -u owner; replaced, never duplicated).
 say "Installing cron at $CRON"
 cat > "$CRON" <<EOF
-# forge-wp-update. Managed by install.sh. Daily plugin updates at 04:00.
+# forge-wp-update. Managed by install.sh. Daily WordPress updates at 04:00.
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 0 4 * * *   root  forge-wp-update >> $LOG_PATH 2>&1

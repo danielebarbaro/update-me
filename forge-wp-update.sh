@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 #
-# forge-wp-update.sh — same-major WordPress plugin updates via wp-cli on Forge.
+# forge-wp-update.sh — same-major WordPress updates via wp-cli on Forge.
 #
-# Updates each discovered WordPress install's plugins to the latest SAME-MAJOR
-# version. Major bumps are skipped. Core, themes, and the database are never
-# touched. After updating a site, its home URL is health-checked; on failure
-# the run's updates for that site are rolled back.
+# For each discovered WordPress install:
+#   - core is updated to the latest MINOR/PATCH release (major releases are
+#     always left to a human), then update-db is run
+#   - plugins and themes are updated to the latest SAME-MAJOR version
+# The database is never dumped or restored. After each stage the site's home URL
+# is health-checked; on failure that stage's changes are rolled back.
 #
 # Usage:
 #   forge-wp-update            # apply updates
@@ -36,6 +38,11 @@ done
 # Defaults (override in config if needed).
 [ -z "${HEALTHCHECK_CODES+x}" ] && HEALTHCHECK_CODES="200 301 302"
 [ -z "${IGNORE_FILENAME+x}" ] && IGNORE_FILENAME=".forge-wp-update-ignore"
+# Theme updates are on by default. Set to "" in the config to turn them off for
+# the whole server, or exclude a single theme with "theme:<slug>" in a site's
+# ignore file. Core minor updates are always applied unless a site's ignore file
+# contains "core".
+[ -z "${UPDATE_THEMES+x}" ] && UPDATE_THEMES="1"
 # Opt-in: when set, commit updated plugin files to the site's git repo (if any).
 [ -z "${COMMIT_AFTER_UPDATE+x}" ] && COMMIT_AFTER_UPDATE=""
 [ -z "${GIT_COMMIT_NAME+x}" ] && GIT_COMMIT_NAME="forge-wp-update"
@@ -112,11 +119,35 @@ health_check() {
   return 1
 }
 
-# git_commit_plugins <owner> <path> <slug...>: opt-in, best-effort. If the site
-# is a git repo, stage the updated plugin dirs and commit. Never fails the run.
-git_commit_plugins() {
-  local owner="$1" path="$2"; shift 2
+# load_ignores <path>: parse the site's exclude file into IGNORED_PLUGINS,
+# IGNORED_THEMES and IGNORE_CORE. A bare slug excludes a plugin, "theme:<slug>"
+# excludes a theme, "core" excludes the core update for that site.
+load_ignores() {
+  local file="$1/$IGNORE_FILENAME" raw
+  IGNORED_PLUGINS=()
+  IGNORED_THEMES=()
+  IGNORE_CORE=""
+  [ -r "$file" ] || return 0
+  while IFS= read -r raw || [ -n "$raw" ]; do
+    raw="${raw%%#*}"
+    raw="${raw//[[:space:]]/}"
+    [ -n "$raw" ] || continue
+    case "$raw" in
+      core)    IGNORE_CORE=1 ;;
+      theme:*) IGNORED_THEMES+=("${raw#theme:}") ;;
+      *)       IGNORED_PLUGINS+=("$raw") ;;
+    esac
+  done < "$file"
+}
+
+# git_commit_updates <owner> <path> <plugins|themes> <slug...>: opt-in,
+# best-effort. If the site is a git repo, stage the updated dirs for that type
+# and commit them. Plugins and themes get separate commits so either can be
+# reverted alone. Core files are never committed. Never fails the run.
+git_commit_updates() {
+  local owner="$1" path="$2" type="$3"; shift 3
   [ -n "$COMMIT_AFTER_UPDATE" ] || return 0
+  [ "$#" -gt 0 ] || return 0
   if ! command -v git >/dev/null; then
     log "$path: git not found, skip commit"
     return 0
@@ -127,35 +158,40 @@ git_commit_plugins() {
   fi
   local -a paths=()
   local slug
-  for slug in "$@"; do paths+=("wp-content/plugins/$slug"); done
+  for slug in "$@"; do paths+=("wp-content/$type/$slug"); done
 
-  # Commit ONLY the updated plugin paths. A path-scoped commit ignores whatever
-  # else is staged or dirty, so unrelated site changes are never swept in.
+  # Commit ONLY the updated paths. A path-scoped commit ignores whatever else is
+  # staged or dirty, so unrelated site changes are never swept in.
   if [ -z "$(sudo -u "$owner" -H git -C "$path" status --porcelain -- "${paths[@]}" 2>>"$LOG")" ]; then
-    log "$path: no plugin file changes to commit"
+    log "$path: no $type file changes to commit"
   else
     # Redirect runs as root (the script's user), which owns $LOG; sudo only drops
     # privileges for git itself, so SC2024 does not apply here.
     # shellcheck disable=SC2024
     if sudo -u "$owner" -H git -C "$path" \
         -c "user.name=$GIT_COMMIT_NAME" -c "user.email=$GIT_COMMIT_EMAIL" \
-        commit -m "chore(plugins): same-major update $*" -- "${paths[@]}" >>"$LOG" 2>&1; then
-      log "$path: committed plugin update ($*)"
+        commit -m "chore($type): same-major update $*" -- "${paths[@]}" >>"$LOG" 2>&1; then
+      log "$path: committed $type update ($*)"
       if [ -n "$PUSH_AFTER_COMMIT" ]; then
         # shellcheck disable=SC2024
         if sudo -u "$owner" -H git -C "$path" push >>"$LOG" 2>&1; then
-          log "$path: pushed plugin update to remote"
+          log "$path: pushed $type update to remote"
         else
           log "ERROR: $path git push failed (check remote and credentials)"
         fi
       fi
     else
-      log "ERROR: $path git commit failed"
+      log "ERROR: $path git commit failed for $type"
     fi
   fi
+}
 
-  # Report any other pending changes left in the working tree (not committed).
-  local others count
+# report_leftovers <owner> <path>: log any other pending changes left in the
+# working tree after the run's commits, without committing them.
+report_leftovers() {
+  local owner="$1" path="$2" others count
+  [ -n "$COMMIT_AFTER_UPDATE" ] || return 0
+  sudo -u "$owner" -H git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   others="$(sudo -u "$owner" -H git -C "$path" status --porcelain 2>>"$LOG")"
   if [ -n "$others" ]; then
     count="$(printf '%s\n' "$others" | grep -c '')"
@@ -163,96 +199,228 @@ git_commit_plugins() {
   fi
 }
 
-# update_site <owner> <path>: filter, apply, verify, rollback on failure.
-update_site() {
-  local owner="$1" path="$2"
-  local ignore_file="$path/$IGNORE_FILENAME"
-  local -a ignored=()
-  if [ -r "$ignore_file" ]; then
-    local raw
-    while IFS= read -r raw || [ -n "$raw" ]; do
-      raw="${raw%%#*}"
-      raw="${raw//[[:space:]]/}"
-      [ -n "$raw" ] && ignored+=("$raw")
-    done < "$ignore_file"
-  fi
+# collect_updates <owner> <path> <plugin|theme>: fill UPD_NAMES and UPD_OLDS with
+# the same-major, non-excluded updates wp-cli offers. UPD_OFFERED counts every
+# update offered, so "none available" stays distinguishable from "all filtered".
+collect_updates() {
+  local owner="$1" path="$2" type="$3"
+  UPD_NAMES=()
+  UPD_OLDS=()
+  UPD_OFFERED=0
 
   local csv status
-  csv="$(wp_as "$owner" "$path" plugin list --update=available --fields=name,version,update_version --format=csv)"; status=$?
+  csv="$(wp_as "$owner" "$path" "$type" list --update=available --fields=name,version,update_version --format=csv)"; status=$?
   if [ "$status" -ne 0 ]; then
-    log "ERROR: $path wp-cli failed listing plugins (status=$status), skipping site"
-    FAILURES=$((FAILURES+1))
-    return 0
+    log "ERROR: $path wp-cli failed listing ${type}s (status=$status)"
+    return 1
+  fi
+
+  local -a ignored=()
+  if [ "$type" = "theme" ]; then
+    ignored=("${IGNORED_THEMES[@]:-}")
+  else
+    ignored=("${IGNORED_PLUGINS[@]:-}")
   fi
 
   # wp-cli prints the csv header even with zero results, so a non-empty $csv
   # does not mean there are updates: count the data rows instead.
-  local -a names=() olds=()
   local name cur new ig skip
-  local offered=0
   while IFS=, read -r name cur new; do
     [ "$name" = "name" ] && continue
     [ -z "$name" ] && continue
-    offered=$((offered+1))
+    UPD_OFFERED=$((UPD_OFFERED+1))
     skip=0
     for ig in "${ignored[@]:-}"; do
       [ "$ig" = "$name" ] && skip=1 && break
     done
     if [ "$skip" = 1 ]; then
-      log "$path: skip $name (excluded)"
+      log "$path: skip $type $name (excluded)"
       continue
     fi
     if ! same_major "$cur" "$new"; then
-      log "$path: skip $name ($cur -> $new) major bump"
+      log "$path: skip $type $name ($cur -> $new) major bump"
       continue
     fi
-    names+=("$name")
-    olds+=("$cur")
+    UPD_NAMES+=("$name")
+    UPD_OLDS+=("$cur")
   done <<< "$csv"
+  return 0
+}
 
-  if [ "$offered" -eq 0 ]; then
-    log "$path: no plugin updates available"
+# update_core <owner> <path>: apply WordPress core minor and patch releases only,
+# then health-check. Major releases are always left to a human. On failure the
+# core FILES are put back; the database is never dumped or restored, because a
+# minor release does not migrate the schema.
+# Returns 1 when the site must be left alone for the rest of the run.
+update_core() {
+  local owner="$1" path="$2"
+  if [ -n "$IGNORE_CORE" ]; then
+    log "$path: skip core (excluded)"
     return 0
   fi
-  if [ "${#names[@]}" -eq 0 ]; then
-    log "$path: nothing eligible ($offered update(s) all filtered out)"
-    return 0
+
+  local old new status
+  old="$(wp_as "$owner" "$path" core version)"; status=$?
+  if [ "$status" -ne 0 ] || [ -z "$old" ]; then
+    log "ERROR: $path cannot read core version (wp-cli status=$status), skipping core"
+    FAILURES=$((FAILURES+1))
+    return 1
   fi
 
   if [ -n "$DRY_RUN" ]; then
-    log "$path: DRY-RUN would update: ${names[*]}"
-    wp_as "$owner" "$path" plugin update "${names[@]}" --dry-run >> "$LOG" 2>&1
+    log "$path: DRY-RUN core is $old, minor updates offered:"
+    wp_as "$owner" "$path" core check-update --minor --fields=version --format=csv >> "$LOG" 2>&1
     return 0
   fi
 
   CURRENT_SITE_OWNER="$owner"
   CURRENT_SITE_PATH="$path"
-  log "$path: updating ${#names[@]} plugin(s): ${names[*]}"
-  if ! wp_as "$owner" "$path" plugin update "${names[@]}" >> "$LOG" 2>&1; then
-    log "ERROR: $path plugin update command failed"
+  if ! wp_as "$owner" "$path" core update --minor >> "$LOG" 2>&1; then
+    log "ERROR: $path core update --minor failed"
     FAILURES=$((FAILURES+1))
+    return 1
+  fi
+
+  new="$(wp_as "$owner" "$path" core version)"
+  if [ "$new" = "$old" ]; then
+    log "$path: core already at latest minor ($old)"
+    return 0
+  fi
+  log "$path: core updated $old -> $new"
+  if ! wp_as "$owner" "$path" core update-db >> "$LOG" 2>&1; then
+    log "ERROR: $path core update-db failed after $old -> $new"
+  fi
+
+  if health_check "$owner" "$path"; then
+    log "$path: healthy after core update"
+    return 0
+  fi
+
+  log "ERROR: $path unhealthy after core update, rolling back to $old"
+  if wp_as "$owner" "$path" core update --version="$old" --force >> "$LOG" 2>&1; then
+    wp_as "$owner" "$path" core update-db >> "$LOG" 2>&1 || true
+    log "$path: rolled back core to $old"
+  else
+    log "ERROR: $path core rollback to $old failed"
+  fi
+  if health_check "$owner" "$path"; then
+    log "$path: healthy after core rollback"
+  else
+    log "ERROR: $path STILL unhealthy after core rollback"
+  fi
+  FAILURES=$((FAILURES+1))
+  return 1
+}
+
+# update_extensions <owner> <path>: apply eligible plugin and theme updates, then
+# health-check once. If the site is down afterwards every update applied in this
+# run is rolled back, themes first, so the site is back where it started.
+update_extensions() {
+  local owner="$1" path="$2"
+  local -a p_names=() p_olds=() t_names=() t_olds=()
+
+  if collect_updates "$owner" "$path" plugin; then
+    if [ "${#UPD_NAMES[@]}" -gt 0 ]; then
+      p_names=("${UPD_NAMES[@]}")
+      p_olds=("${UPD_OLDS[@]}")
+    elif [ "$UPD_OFFERED" -eq 0 ]; then
+      log "$path: no plugin updates available"
+    else
+      log "$path: no eligible plugin ($UPD_OFFERED update(s) all filtered out)"
+    fi
+  else
+    FAILURES=$((FAILURES+1))
+  fi
+
+  if [ -n "$UPDATE_THEMES" ]; then
+    if collect_updates "$owner" "$path" theme; then
+      if [ "${#UPD_NAMES[@]}" -gt 0 ]; then
+        t_names=("${UPD_NAMES[@]}")
+        t_olds=("${UPD_OLDS[@]}")
+      elif [ "$UPD_OFFERED" -eq 0 ]; then
+        log "$path: no theme updates available"
+      else
+        log "$path: no eligible theme ($UPD_OFFERED update(s) all filtered out)"
+      fi
+    else
+      FAILURES=$((FAILURES+1))
+    fi
+  fi
+
+  if [ "${#p_names[@]}" -eq 0 ] && [ "${#t_names[@]}" -eq 0 ]; then
+    return 0
+  fi
+
+  if [ -n "$DRY_RUN" ]; then
+    [ "${#p_names[@]}" -gt 0 ] && log "$path: DRY-RUN would update plugin(s): ${p_names[*]}"
+    [ "${#t_names[@]}" -gt 0 ] && log "$path: DRY-RUN would update theme(s): ${t_names[*]}"
+    return 0
+  fi
+
+  CURRENT_SITE_OWNER="$owner"
+  CURRENT_SITE_PATH="$path"
+  if [ "${#p_names[@]}" -gt 0 ]; then
+    log "$path: updating ${#p_names[@]} plugin(s): ${p_names[*]}"
+    if ! wp_as "$owner" "$path" plugin update "${p_names[@]}" >> "$LOG" 2>&1; then
+      log "ERROR: $path plugin update command failed"
+      FAILURES=$((FAILURES+1))
+    fi
+  fi
+  if [ "${#t_names[@]}" -gt 0 ]; then
+    log "$path: updating ${#t_names[@]} theme(s): ${t_names[*]}"
+    if ! wp_as "$owner" "$path" theme update "${t_names[@]}" >> "$LOG" 2>&1; then
+      log "ERROR: $path theme update command failed"
+      FAILURES=$((FAILURES+1))
+    fi
   fi
 
   if health_check "$owner" "$path"; then
     log "$path: healthy after update"
-    git_commit_plugins "$owner" "$path" "${names[@]}"
-  else
-    log "ERROR: $path unhealthy after update, rolling back"
-    local i
-    for i in "${!names[@]}"; do
-      if wp_as "$owner" "$path" plugin update "${names[$i]}" --version="${olds[$i]}" >> "$LOG" 2>&1; then
-        log "$path: rolled back ${names[$i]} to ${olds[$i]}"
-      else
-        log "ERROR: $path rollback failed for ${names[$i]}"
-      fi
-    done
-    if health_check "$owner" "$path"; then
-      log "$path: healthy after rollback"
-    else
-      log "ERROR: $path STILL unhealthy after rollback"
-    fi
-    FAILURES=$((FAILURES+1))
+    [ "${#p_names[@]}" -gt 0 ] && git_commit_updates "$owner" "$path" plugins "${p_names[@]}"
+    [ "${#t_names[@]}" -gt 0 ] && git_commit_updates "$owner" "$path" themes "${t_names[@]}"
+    report_leftovers "$owner" "$path"
+    return 0
   fi
+
+  log "ERROR: $path unhealthy after update, rolling back"
+  local i
+  local -a pairs=()
+  for i in "${!t_names[@]}"; do pairs+=("${t_names[$i]}" "${t_olds[$i]}"); done
+  [ "${#pairs[@]}" -gt 0 ] && rollback_type "$owner" "$path" theme "${pairs[@]}"
+  pairs=()
+  for i in "${!p_names[@]}"; do pairs+=("${p_names[$i]}" "${p_olds[$i]}"); done
+  [ "${#pairs[@]}" -gt 0 ] && rollback_type "$owner" "$path" plugin "${pairs[@]}"
+  if health_check "$owner" "$path"; then
+    log "$path: healthy after rollback"
+  else
+    log "ERROR: $path STILL unhealthy after rollback"
+  fi
+  FAILURES=$((FAILURES+1))
+}
+
+# rollback_type <owner> <path> <plugin|theme> <slug> <version> [<slug> <version>...]:
+# put each updated extension back to the version it had before this run. Pairs are
+# passed flat rather than by array reference so this still runs on bash 3.2.
+rollback_type() {
+  local owner="$1" path="$2" type="$3"; shift 3
+  local name old
+  while [ "$#" -ge 2 ]; do
+    name="$1"; old="$2"; shift 2
+    if wp_as "$owner" "$path" "$type" update "$name" --version="$old" >> "$LOG" 2>&1; then
+      log "$path: rolled back $type $name to $old"
+    else
+      log "ERROR: $path rollback failed for $type $name"
+    fi
+  done
+}
+
+# update_site <owner> <path>: core first, then plugins and themes. A core failure
+# leaves the extensions alone: one broken thing at a time is enough.
+update_site() {
+  local owner="$1" path="$2"
+  load_ignores "$path"
+  update_core "$owner" "$path" || { CURRENT_SITE_PATH=""; CURRENT_SITE_OWNER=""; return 0; }
+  update_extensions "$owner" "$path"
   CURRENT_SITE_PATH=""
   CURRENT_SITE_OWNER=""
 }

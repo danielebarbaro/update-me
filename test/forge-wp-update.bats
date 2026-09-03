@@ -117,13 +117,13 @@ mkcfg() {
   [[ "$output" != *"unhealthy"* ]]
 }
 
-@test "git_commit_plugins is a no-op when COMMIT_AFTER_UPDATE is unset" {
+@test "git_commit_updates is a no-op when COMMIT_AFTER_UPDATE is unset" {
   cfg="$(mkcfg)"
   run env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
     source "$1"
     COMMIT_AFTER_UPDATE=""
     sudo() { echo "GIT-TOUCHED"; }   # must not run when disabled
-    git_commit_plugins owner /site woocommerce && echo done
+    git_commit_updates owner /site plugins woocommerce && echo done
   ' _ "$SCRIPT"
   rm -f "$cfg"
   [ "$status" -eq 0 ]
@@ -131,20 +131,20 @@ mkcfg() {
   [[ "$output" != *"GIT-TOUCHED"* ]]
 }
 
-@test "git_commit_plugins skips when path is not a git repo" {
+@test "git_commit_updates skips when path is not a git repo" {
   cfg="$(mkcfg)"
   run env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
     source "$1"
     COMMIT_AFTER_UPDATE=1
     sudo() { return 1; }             # rev-parse fails => not a repo
-    git_commit_plugins owner /site woocommerce && echo done
+    git_commit_updates owner /site plugins woocommerce && echo done
   ' _ "$SCRIPT"
   rm -f "$cfg"
   [ "$status" -eq 0 ]
   [[ "$output" == *"done"* ]]
 }
 
-@test "git_commit_plugins commits only plugin paths, leaves other files" {
+@test "git_commit_updates commits only plugin paths, leaves other files" {
   cfg="$(mkcfg)"
   repo="$(mktemp -d)"
   git -C "$repo" init -q
@@ -164,7 +164,7 @@ mkcfg() {
     COMMIT_AFTER_UPDATE=1
     sudo() { while [ "$1" = "-u" ] || [ "$1" = "-H" ]; do
                if [ "$1" = "-u" ]; then shift 2; else shift; fi; done; "$@"; }
-    git_commit_plugins owner "'"$repo"'" woocommerce
+    git_commit_updates owner "'"$repo"'" plugins woocommerce
   ' _ "$SCRIPT"
 
   last_msg="$(git -C "$repo" log -1 --pretty=%s)"
@@ -195,58 +195,30 @@ mk_repo_with_remote() {
 
 sudo_passthrough='sudo() { while [ "$1" = "-u" ] || [ "$1" = "-H" ]; do if [ "$1" = "-u" ]; then shift 2; else shift; fi; done; "$@"; }'
 
-@test "git_commit_plugins does not push when PUSH_AFTER_COMMIT is unset" {
+@test "git_commit_updates does not push when PUSH_AFTER_COMMIT is unset" {
   cfg="$(mkcfg)"
   read -r remote work <<< "$(mk_repo_with_remote)"
   env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
     source "$1"; '"$sudo_passthrough"'
     COMMIT_AFTER_UPDATE=1; PUSH_AFTER_COMMIT=""
-    git_commit_plugins owner "'"$work"'" woocommerce
+    git_commit_updates owner "'"$work"'" plugins woocommerce
   ' _ "$SCRIPT"
   remote_msg="$(git -C "$remote" log -1 --pretty=%s main)"
   rm -rf "$remote" "$work" "$cfg"
   [[ "$remote_msg" == "init" ]]                              # remote unchanged
 }
 
-@test "git_commit_plugins pushes to remote when PUSH_AFTER_COMMIT is set" {
+@test "git_commit_updates pushes to remote when PUSH_AFTER_COMMIT is set" {
   cfg="$(mkcfg)"
   read -r remote work <<< "$(mk_repo_with_remote)"
   env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
     source "$1"; '"$sudo_passthrough"'
     COMMIT_AFTER_UPDATE=1; PUSH_AFTER_COMMIT=1
-    git_commit_plugins owner "'"$work"'" woocommerce
+    git_commit_updates owner "'"$work"'" plugins woocommerce
   ' _ "$SCRIPT"
   remote_msg="$(git -C "$remote" log -1 --pretty=%s main)"
   rm -rf "$remote" "$work" "$cfg"
   [[ "$remote_msg" == *"same-major update woocommerce"* ]]   # remote got the commit
-}
-
-# update_site: wp-cli always emits the csv header, so header-only output means
-# "no updates", not "all filtered out". These two cases must log differently.
-run_update_site() {
-  cfg="$(mktemp)"
-  log="$(mktemp)"
-  printf 'SERVER_NAME=s1\nSITES_ROOT=/home\nLOG=%s\n' "$log" > "$cfg"
-  env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
-    source "$1"
-    wp_as() { printf "%s\n" "$CSV"; }
-    update_site owner /home/owner/site.test
-  ' _ "$SCRIPT" >/dev/null 2>&1
-  cat "$log"
-  rm -f "$cfg" "$log"
-}
-
-@test "update_site reports no updates when wp-cli returns only the csv header" {
-  run env CSV='name,version,update_version' bash -c 'SCRIPT="'"$SCRIPT"'"; '"$(declare -f run_update_site)"'; run_update_site'
-  [[ "$output" == *"no plugin updates available"* ]]
-  [[ "$output" != *"nothing eligible"* ]]
-}
-
-@test "update_site reports nothing eligible when every offered update is filtered" {
-  run env CSV='name,version,update_version
-wordpress-seo,27.9,28.4' bash -c 'SCRIPT="'"$SCRIPT"'"; '"$(declare -f run_update_site)"'; run_update_site'
-  [[ "$output" == *"major bump"* ]]
-  [[ "$output" == *"nothing eligible (1 update(s) all filtered out)"* ]]
 }
 
 # wp-cli stderr must be attributed: raw stderr lands in the log unlabelled and
@@ -276,4 +248,208 @@ wordpress-seo,27.9,28.4' bash -c 'SCRIPT="'"$SCRIPT"'"; '"$(declare -f run_updat
   ' _ "$SCRIPT"
   rm -f "$log" "$cfg"
   [[ "$output" == *"st=7"* ]]
+}
+
+# --- ignore file, core and theme entries -----------------------------------
+
+mk_site_with_ignore() {
+  site="$(mktemp -d)"
+  printf '%s\n' "$@" > "$site/.forge-wp-update-ignore"
+  echo "$site"
+}
+
+@test "load_ignores splits plugin slugs, theme: entries and core" {
+  cfg="$(mkcfg)"
+  site="$(mk_site_with_ignore 'akismet' '# a comment' 'theme:avada' 'core' '')"
+  run env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"
+    load_ignores "$2"
+    echo "plugins=${IGNORED_PLUGINS[*]}"
+    echo "themes=${IGNORED_THEMES[*]}"
+    echo "core=$IGNORE_CORE"
+  ' _ "$SCRIPT" "$site"
+  rm -rf "$site" "$cfg"
+  [[ "$output" == *"plugins=akismet"* ]]
+  [[ "$output" == *"themes=avada"* ]]
+  [[ "$output" == *"core=1"* ]]
+}
+
+@test "load_ignores leaves everything empty when the site has no ignore file" {
+  cfg="$(mkcfg)"
+  site="$(mktemp -d)"
+  run env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"
+    load_ignores "$2"
+    echo "n=${#IGNORED_PLUGINS[@]}${#IGNORED_THEMES[@]} core=[$IGNORE_CORE]"
+  ' _ "$SCRIPT" "$site"
+  rm -rf "$site" "$cfg"
+  [[ "$output" == *"n=00 core=[]"* ]]
+}
+
+# --- collect_updates -------------------------------------------------------
+
+# Runs collect_updates against a stubbed wp-cli listing. $CSV is the listing,
+# $TYPE the extension type, and the ignore arrays are set by the caller.
+collect_with() {
+  cfg="$(mktemp)"; log="$(mktemp)"
+  printf 'SERVER_NAME=s1\nSITES_ROOT=/home\nLOG=%s\n' "$log" > "$cfg"
+  env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"
+    wp_as() { printf "%s\n" "$CSV"; }
+    IGNORED_PLUGINS=(${IG_PLUGINS:-}); IGNORED_THEMES=(${IG_THEMES:-}); IGNORE_CORE=""
+    collect_updates owner /home/owner/site.test "$TYPE"
+    echo "names=${UPD_NAMES[*]:-} offered=$UPD_OFFERED"
+  ' _ "$SCRIPT"
+  cat "$log"
+  rm -f "$cfg" "$log"
+}
+
+@test "collect_updates keeps same-major updates and counts what was offered" {
+  run env TYPE=plugin CSV='name,version,update_version
+akismet,5.3,5.4
+woocommerce,8.1,9.0' bash -c 'SCRIPT="'"$SCRIPT"'"; '"$(declare -f collect_with)"'; collect_with'
+  [[ "$output" == *"names=akismet offered=2"* ]]
+  [[ "$output" == *"skip plugin woocommerce (8.1 -> 9.0) major bump"* ]]
+}
+
+@test "collect_updates reports an empty listing as zero offered" {
+  run env TYPE=plugin CSV='name,version,update_version' bash -c 'SCRIPT="'"$SCRIPT"'"; '"$(declare -f collect_with)"'; collect_with'
+  [[ "$output" == *"names= offered=0"* ]]
+}
+
+@test "collect_updates applies theme exclusions to themes only" {
+  run env TYPE=theme IG_THEMES=avada IG_PLUGINS=twentytwentyfour CSV='name,version,update_version
+avada,7.11,7.12
+twentytwentyfour,1.1,1.2' bash -c 'SCRIPT="'"$SCRIPT"'"; '"$(declare -f collect_with)"'; collect_with'
+  [[ "$output" == *"skip theme avada (excluded)"* ]]
+  [[ "$output" == *"names=twentytwentyfour offered=2"* ]]
+}
+
+# --- core ------------------------------------------------------------------
+
+# Runs update_core with wp-cli stubbed by $STUB, a case statement keyed on the
+# wp-cli subcommand, and prints the log plus every wp-cli call made.
+core_with() {
+  cfg="$(mktemp)"; log="$(mktemp)"
+  printf 'SERVER_NAME=s1\nSITES_ROOT=/home\nLOG=%s\n' "$log" > "$cfg"
+  env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"
+    FAILURES=0; DRY_RUN="${DRY:-}"; IGNORE_CORE="${IGN:-}"
+    CURRENT_SITE_OWNER=""; CURRENT_SITE_PATH=""
+    wp_as() { local o="$1" p="$2"; shift 2; echo "CALL: $*" >> "'"$CALLS"'"; eval "$STUB"; }
+    health_check() { [ "${HEALTHY:-1}" = 1 ]; }
+    update_core owner /home/owner/site.test; echo "rc=$? failures=$FAILURES"
+  ' _ "$SCRIPT"
+  cat "$log"
+  rm -f "$cfg" "$log"
+}
+
+@test "update_core skips the site when its ignore file contains core" {
+  CALLS="$(mktemp)"
+  run env IGN=1 STUB='true' bash -c 'SCRIPT="'"$SCRIPT"'"; CALLS="'"$CALLS"'"; '"$(declare -f core_with)"'; core_with'
+  calls="$(cat "$CALLS")"; rm -f "$CALLS"
+  [[ "$output" == *"skip core (excluded)"* ]]
+  [[ "$output" == *"rc=0 failures=0"* ]]
+  [ -z "$calls" ]                                   # wp-cli never touched
+}
+
+@test "update_core applies only minor releases and runs update-db" {
+  CALLS="$(mktemp)"; MARK="$BATS_TEST_TMPDIR/bumped"
+  run env MARK="$MARK" STUB='case "$1 $2" in "core version") if [ -f "$MARK" ]; then echo 6.8.2; else echo 6.8.1; fi ;; "core update") : > "$MARK" ;; esac' \
+    bash -c 'SCRIPT="'"$SCRIPT"'"; CALLS="'"$CALLS"'"; '"$(declare -f core_with)"'; core_with'
+  calls="$(cat "$CALLS")"; rm -f "$CALLS" "$MARK"
+  [[ "$calls" == *"core update --minor"* ]]
+  [[ "$calls" == *"core update-db"* ]]
+  [[ "$calls" != *"--version"* ]]                   # never a major, never a rollback
+  [[ "$output" == *"core updated 6.8.1 -> 6.8.2"* ]]
+  [[ "$output" == *"rc=0 failures=0"* ]]
+}
+
+@test "update_core rolls the core files back to the previous version when the site goes down" {
+  CALLS="$(mktemp)"; MARK="$BATS_TEST_TMPDIR/bumped"
+  run env MARK="$MARK" HEALTHY=0 STUB='case "$1 $2" in "core version") if [ -f "$MARK" ]; then echo 6.8.2; else echo 6.8.1; fi ;; "core update") [ "$3" = "--minor" ] && : > "$MARK" ;; esac' \
+    bash -c 'SCRIPT="'"$SCRIPT"'"; CALLS="'"$CALLS"'"; '"$(declare -f core_with)"'; core_with'
+  calls="$(cat "$CALLS")"; rm -f "$CALLS" "$MARK"
+  [[ "$calls" == *"core update --version=6.8.1 --force"* ]]
+  [[ "$output" == *"unhealthy after core update, rolling back to 6.8.1"* ]]
+  [[ "$output" == *"rc=1 failures=1"* ]]            # site left out of the rest of the run
+}
+
+@test "update_core changes nothing in dry-run" {
+  CALLS="$(mktemp)"
+  run env DRY=--dry-run STUB='case "$1 $2" in "core version") echo 6.8.1 ;; esac' \
+    bash -c 'SCRIPT="'"$SCRIPT"'"; CALLS="'"$CALLS"'"; '"$(declare -f core_with)"'; core_with'
+  calls="$(cat "$CALLS")"; rm -f "$CALLS"
+  [[ "$calls" != *"core update --minor"* ]]
+  [[ "$calls" == *"core check-update --minor"* ]]
+  [[ "$output" == *"rc=0 failures=0"* ]]
+}
+
+# --- plugins and themes together -------------------------------------------
+
+# Runs update_extensions with wp-cli stubbed: $P_CSV and $T_CSV are the plugin
+# and theme listings, $HEALTHY decides the post-update check. Every wp-cli call
+# is appended to $CALLS.
+ext_with() {
+  cfg="$(mktemp)"; log="$(mktemp)"
+  printf 'SERVER_NAME=s1\nSITES_ROOT=/home\nLOG=%s\n' "$log" > "$cfg"
+  env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"
+    FAILURES=0; DRY_RUN=""; UPDATE_THEMES="${THEMES-1}"
+    IGNORED_PLUGINS=(); IGNORED_THEMES=(); IGNORE_CORE=""
+    CURRENT_SITE_OWNER=""; CURRENT_SITE_PATH=""
+    wp_as() {
+      local o="$1" p="$2"; shift 2
+      echo "CALL: $*" >> "'"$CALLS"'"
+      case "$1 $2" in
+        "plugin list") printf "%s\n" "$P_CSV" ;;
+        "theme list")  printf "%s\n" "$T_CSV" ;;
+      esac
+    }
+    health_check() { [ "${HEALTHY:-1}" = 1 ]; }
+    git_commit_updates() { echo "COMMIT: $3 ${*:4}" >> "'"$CALLS"'"; }
+    report_leftovers() { :; }
+    update_extensions owner /home/owner/site.test; echo "failures=$FAILURES"
+  ' _ "$SCRIPT"
+  cat "$log"
+  rm -f "$cfg" "$log"
+}
+
+@test "update_extensions updates themes by default and commits each type separately" {
+  CALLS="$(mktemp)"
+  run env P_CSV='name,version,update_version
+akismet,5.3,5.4' T_CSV='name,version,update_version
+twentytwentyfour,1.1,1.2' bash -c 'SCRIPT="'"$SCRIPT"'"; CALLS="'"$CALLS"'"; '"$(declare -f ext_with)"'; ext_with'
+  calls="$(cat "$CALLS")"; rm -f "$CALLS"
+  [[ "$calls" == *"plugin update akismet"* ]]
+  [[ "$calls" == *"theme update twentytwentyfour"* ]]
+  [[ "$calls" == *"COMMIT: plugins akismet"* ]]
+  [[ "$calls" == *"COMMIT: themes twentytwentyfour"* ]]
+  [[ "$output" == *"failures=0"* ]]
+}
+
+@test "update_extensions leaves themes alone when UPDATE_THEMES is empty" {
+  CALLS="$(mktemp)"
+  run env THEMES= P_CSV='name,version,update_version
+akismet,5.3,5.4' T_CSV='name,version,update_version
+twentytwentyfour,1.1,1.2' bash -c 'SCRIPT="'"$SCRIPT"'"; CALLS="'"$CALLS"'"; '"$(declare -f ext_with)"'; ext_with'
+  calls="$(cat "$CALLS")"; rm -f "$CALLS"
+  [[ "$calls" == *"plugin update akismet"* ]]
+  [[ "$calls" != *"theme"* ]]                       # not even listed
+}
+
+@test "update_extensions rolls themes back before plugins when the site goes down" {
+  CALLS="$(mktemp)"
+  run env HEALTHY=0 P_CSV='name,version,update_version
+akismet,5.3,5.4' T_CSV='name,version,update_version
+twentytwentyfour,1.1,1.2' bash -c 'SCRIPT="'"$SCRIPT"'"; CALLS="'"$CALLS"'"; '"$(declare -f ext_with)"'; ext_with'
+  calls="$(cat "$CALLS")"; rm -f "$CALLS"
+  [[ "$calls" == *"theme update twentytwentyfour --version=1.1"* ]]
+  [[ "$calls" == *"plugin update akismet --version=5.3"* ]]
+  # themes first: the theme rollback line comes before the plugin one
+  theme_at="$(printf '%s\n' "$calls" | grep -n -- "theme update twentytwentyfour --version" | cut -d: -f1)"
+  plugin_at="$(printf '%s\n' "$calls" | grep -n -- "plugin update akismet --version" | cut -d: -f1)"
+  [ "$theme_at" -lt "$plugin_at" ]
+  [[ "$calls" != *"COMMIT:"* ]]                     # nothing committed on a rollback
+  [[ "$output" == *"failures=1"* ]]
 }
