@@ -249,3 +249,31 @@ wordpress-seo,27.9,28.4' bash -c 'SCRIPT="'"$SCRIPT"'"; '"$(declare -f run_updat
   [[ "$output" == *"nothing eligible (1 update(s) all filtered out)"* ]]
 }
 
+# wp-cli stderr must be attributed: raw stderr lands in the log unlabelled and
+# before the site's own line, which reads as if it came from the previous site.
+@test "wp_as logs wp-cli stderr prefixed with the site path" {
+  log="$(mktemp)"; cfg="$(mktemp)"
+  printf 'SERVER_NAME=s1\nSITES_ROOT=/home\nLOG=%s\n' "$log" > "$cfg"
+  run env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"
+    sudo() { echo "https://site.test"; echo "PHP Warning:  boom" >&2; }
+    out="$(wp_as owner /home/owner/site.test option get home)"
+    echo "out=$out"
+  ' _ "$SCRIPT"
+  logged="$(cat "$log")"
+  rm -f "$log" "$cfg"
+  [[ "$output" == *"out=https://site.test"* ]]                        # stdout still reaches the caller
+  [[ "$logged" == *"/home/owner/site.test: wp-cli: PHP Warning:  boom"* ]]
+}
+
+@test "wp_as propagates the wp-cli exit status through the stderr capture" {
+  log="$(mktemp)"; cfg="$(mktemp)"
+  printf 'SERVER_NAME=s1\nSITES_ROOT=/home\nLOG=%s\n' "$log" > "$cfg"
+  run env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"
+    sudo() { echo "Error: no such site" >&2; return 7; }
+    wp_as owner /home/owner/site.test option get home >/dev/null; echo "st=$?"
+  ' _ "$SCRIPT"
+  rm -f "$log" "$cfg"
+  [[ "$output" == *"st=7"* ]]
+}

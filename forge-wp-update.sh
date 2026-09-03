@@ -73,10 +73,25 @@ is_healthy_code() {
   return 1
 }
 
-# Run wp-cli as the site owner. stderr to log; stdout returned to caller.
+# Run wp-cli as the site owner. stdout is returned to the caller; stderr is
+# buffered and written to the log one prefixed line at a time. Raw stderr would
+# land in the log unlabelled and ahead of the site's own log line (wp-cli writes
+# it while running, log() writes after), which makes PHP warnings from one site
+# look like they belong to the previous one.
 wp_as() {
   local owner="$1" path="$2"; shift 2
-  sudo -u "$owner" -H wp --path="$path" "$@" 2>>"$LOG"
+  local err status line
+  err="$(mktemp 2>/dev/null)" || err=""
+  if [ -z "$err" ]; then
+    sudo -u "$owner" -H wp --path="$path" "$@" 2>>"$LOG"
+    return $?
+  fi
+  sudo -u "$owner" -H wp --path="$path" "$@" 2>"$err"; status=$?
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] && log "$path: wp-cli: $line"
+  done < "$err"
+  rm -f "$err"
+  return "$status"
 }
 
 # health_check <owner> <path> -> exit 0 if home URL returns a healthy code.
