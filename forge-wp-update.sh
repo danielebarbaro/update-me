@@ -142,8 +142,9 @@ load_ignores() {
 
 # git_commit_updates <owner> <path> <plugins|themes> <slug...>: opt-in,
 # best-effort. If the site is a git repo, stage the updated dirs for that type
-# and commit them. Plugins and themes get separate commits so either can be
-# reverted alone. Core files are never committed. Never fails the run.
+# and commit them, setting COMMITTED on success. Plugins and themes get separate
+# commits so either can be reverted alone, and git_push sends them together.
+# Core files are never committed. Never fails the run.
 git_commit_updates() {
   local owner="$1" path="$2" type="$3"; shift 3
   [ -n "$COMMIT_AFTER_UPDATE" ] || return 0
@@ -172,17 +173,25 @@ git_commit_updates() {
         -c "user.name=$GIT_COMMIT_NAME" -c "user.email=$GIT_COMMIT_EMAIL" \
         commit -m "chore($type): same-major update $*" -- "${paths[@]}" >>"$LOG" 2>&1; then
       log "$path: committed $type update ($*)"
-      if [ -n "$PUSH_AFTER_COMMIT" ]; then
-        # shellcheck disable=SC2024
-        if sudo -u "$owner" -H git -C "$path" push >>"$LOG" 2>&1; then
-          log "$path: pushed $type update to remote"
-        else
-          log "ERROR: $path git push failed (check remote and credentials)"
-        fi
-      fi
+      COMMITTED=1
     else
       log "ERROR: $path git commit failed for $type"
     fi
+  fi
+}
+
+# git_push <owner> <path>: opt-in, best-effort. Push once per site per run, after
+# every commit is in, so plugin and theme commits travel together. Never forced,
+# so a diverged remote rejects it and the run carries on.
+git_push() {
+  local owner="$1" path="$2"
+  [ -n "$PUSH_AFTER_COMMIT" ] || return 0
+  [ -n "${COMMITTED:-}" ] || return 0
+  # shellcheck disable=SC2024
+  if sudo -u "$owner" -H git -C "$path" push >>"$LOG" 2>&1; then
+    log "$path: pushed update to remote"
+  else
+    log "ERROR: $path git push failed (check remote and credentials)"
   fi
 }
 
@@ -376,8 +385,10 @@ update_extensions() {
 
   if health_check "$owner" "$path"; then
     log "$path: healthy after update"
+    COMMITTED=""
     [ "${#p_names[@]}" -gt 0 ] && git_commit_updates "$owner" "$path" plugins "${p_names[@]}"
     [ "${#t_names[@]}" -gt 0 ] && git_commit_updates "$owner" "$path" themes "${t_names[@]}"
+    git_push "$owner" "$path"
     report_leftovers "$owner" "$path"
     return 0
   fi
@@ -465,6 +476,7 @@ if ! command -v wp >/dev/null; then
 fi
 
 FAILURES=0
+COMMITTED=""
 CURRENT_SITE_PATH=""
 CURRENT_SITE_OWNER=""
 log "=== START (server=$SERVER_NAME${DRY_RUN:+ DRY-RUN}) ==="

@@ -34,7 +34,8 @@ COMMIT_AFTER_UPDATE=""
 GIT_COMMIT_NAME="forge-wp-update"
 GIT_COMMIT_EMAIL="forge-wp-update@localhost"
 
-# Opt-in: push to the tracked remote after a successful commit. Never forced, so
+# Opt-in: push to the tracked remote once per site, after the run's commits are
+# in (plugins and themes travel together). Never forced, so
 # a diverged remote rejects the push (logged, run continues). Requires the site
 # owner to have push credentials for the remote. Off by default.
 PUSH_AFTER_COMMIT=""

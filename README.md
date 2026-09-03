@@ -71,7 +71,7 @@ core             # this site's core stays where it is
 
 Set `COMMIT_AFTER_UPDATE=1` in the config to record updates in the site's git repo. After a successful same-major update on a site that is a git repo (repo root assumed to be the site root), the updated directories are committed with a path-scoped commit. Plugins and themes get one commit each, so either can be reverted on its own, and only `wp-content/plugins/<slug>` or `wp-content/themes/<slug>` of what was actually updated is committed. Core files are never committed. Any other modified or staged files are left untouched, and their count is written to the log so you can review them yourself. Set `GIT_COMMIT_NAME` and `GIT_COMMIT_EMAIL` to control the commit author. The feature is off by default.
 
-Set `PUSH_AFTER_COMMIT=1` to push the commit to the tracked remote. The push is never forced, so a remote that has moved ahead rejects it (the rejection is logged and the run continues). The site owner needs push credentials for the remote. Useful when sites deploy by pulling from that remote, so the server and the remote stay in sync.
+Set `PUSH_AFTER_COMMIT=1` to push to the tracked remote. The push runs once per site per run, after both commits, so plugin and theme commits travel together. The push is never forced, so a remote that has moved ahead rejects it (the rejection is logged and the run continues). The site owner needs push credentials for the remote. Useful when sites deploy by pulling from that remote, so the server and the remote stay in sync.
 
 ## Cron schedule
 

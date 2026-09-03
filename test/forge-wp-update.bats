@@ -189,36 +189,46 @@ mk_repo_with_remote() {
   echo v1 > "$work/wp-content/plugins/woocommerce/main.php"
   git -C "$work" add -A; git -C "$work" commit -qm init
   git -C "$work" push -q -u origin main
-  echo v2 > "$work/wp-content/plugins/woocommerce/main.php"   # dirty the plugin
+  mkdir -p "$work/wp-content/themes/twentytwentyfour"
+  echo v1 > "$work/wp-content/themes/twentytwentyfour/style.css"
+  git -C "$work" add -A; git -C "$work" commit -qm themes; git -C "$work" push -q
+  echo v2 > "$work/wp-content/plugins/woocommerce/main.php"        # dirty the plugin
+  echo v2 > "$work/wp-content/themes/twentytwentyfour/style.css"   # and the theme
   echo "$remote $work"
 }
 
 sudo_passthrough='sudo() { while [ "$1" = "-u" ] || [ "$1" = "-H" ]; do if [ "$1" = "-u" ]; then shift 2; else shift; fi; done; "$@"; }'
 
-@test "git_commit_updates does not push when PUSH_AFTER_COMMIT is unset" {
+@test "git_push does nothing when PUSH_AFTER_COMMIT is unset" {
   cfg="$(mkcfg)"
   read -r remote work <<< "$(mk_repo_with_remote)"
   env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
     source "$1"; '"$sudo_passthrough"'
     COMMIT_AFTER_UPDATE=1; PUSH_AFTER_COMMIT=""
     git_commit_updates owner "'"$work"'" plugins woocommerce
+    git_push owner "'"$work"'"
   ' _ "$SCRIPT"
   remote_msg="$(git -C "$remote" log -1 --pretty=%s main)"
   rm -rf "$remote" "$work" "$cfg"
-  [[ "$remote_msg" == "init" ]]                              # remote unchanged
+  [[ "$remote_msg" == "themes" ]]                            # remote still at its last pushed commit
 }
 
-@test "git_commit_updates pushes to remote when PUSH_AFTER_COMMIT is set" {
+@test "git_push sends plugin and theme commits together in one push" {
   cfg="$(mkcfg)"
   read -r remote work <<< "$(mk_repo_with_remote)"
   env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
     source "$1"; '"$sudo_passthrough"'
     COMMIT_AFTER_UPDATE=1; PUSH_AFTER_COMMIT=1
     git_commit_updates owner "'"$work"'" plugins woocommerce
+    git_commit_updates owner "'"$work"'" themes twentytwentyfour
+    git_push owner "'"$work"'"
   ' _ "$SCRIPT"
-  remote_msg="$(git -C "$remote" log -1 --pretty=%s main)"
+  remote_msgs="$(git -C "$remote" log -2 --pretty=%s main)"
+  pushes="$(git -C "$remote" reflog show main 2>/dev/null | grep -c update || true)"
   rm -rf "$remote" "$work" "$cfg"
-  [[ "$remote_msg" == *"same-major update woocommerce"* ]]   # remote got the commit
+  [[ "$remote_msgs" == *"chore(plugins): same-major update woocommerce"* ]]
+  [[ "$remote_msgs" == *"chore(themes): same-major update twentytwentyfour"* ]]
+  [ "$pushes" -le 1 ]                                        # both commits, one push
 }
 
 # wp-cli stderr must be attributed: raw stderr lands in the log unlabelled and
