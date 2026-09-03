@@ -220,3 +220,32 @@ sudo_passthrough='sudo() { while [ "$1" = "-u" ] || [ "$1" = "-H" ]; do if [ "$1
   rm -rf "$remote" "$work" "$cfg"
   [[ "$remote_msg" == *"same-major update woocommerce"* ]]   # remote got the commit
 }
+
+# update_site: wp-cli always emits the csv header, so header-only output means
+# "no updates", not "all filtered out". These two cases must log differently.
+run_update_site() {
+  cfg="$(mktemp)"
+  log="$(mktemp)"
+  printf 'SERVER_NAME=s1\nSITES_ROOT=/home\nLOG=%s\n' "$log" > "$cfg"
+  env FORGE_WP_UPDATE_CONFIG="$cfg" SOURCED_ONLY=1 bash -c '
+    source "$1"
+    wp_as() { printf "%s\n" "$CSV"; }
+    update_site owner /home/owner/site.test
+  ' _ "$SCRIPT" >/dev/null 2>&1
+  cat "$log"
+  rm -f "$cfg" "$log"
+}
+
+@test "update_site reports no updates when wp-cli returns only the csv header" {
+  run env CSV='name,version,update_version' bash -c 'SCRIPT="'"$SCRIPT"'"; '"$(declare -f run_update_site)"'; run_update_site'
+  [[ "$output" == *"no plugin updates available"* ]]
+  [[ "$output" != *"nothing eligible"* ]]
+}
+
+@test "update_site reports nothing eligible when every offered update is filtered" {
+  run env CSV='name,version,update_version
+wordpress-seo,27.9,28.4' bash -c 'SCRIPT="'"$SCRIPT"'"; '"$(declare -f run_update_site)"'; run_update_site'
+  [[ "$output" == *"major bump"* ]]
+  [[ "$output" == *"nothing eligible (1 update(s) all filtered out)"* ]]
+}
+

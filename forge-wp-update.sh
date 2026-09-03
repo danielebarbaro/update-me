@@ -169,16 +169,16 @@ update_site() {
     FAILURES=$((FAILURES+1))
     return 0
   fi
-  if [ -z "$csv" ]; then
-    log "$path: no plugin updates available"
-    return 0
-  fi
 
+  # wp-cli prints the csv header even with zero results, so a non-empty $csv
+  # does not mean there are updates: count the data rows instead.
   local -a names=() olds=()
   local name cur new ig skip
+  local offered=0
   while IFS=, read -r name cur new; do
     [ "$name" = "name" ] && continue
     [ -z "$name" ] && continue
+    offered=$((offered+1))
     skip=0
     for ig in "${ignored[@]:-}"; do
       [ "$ig" = "$name" ] && skip=1 && break
@@ -195,8 +195,12 @@ update_site() {
     olds+=("$cur")
   done <<< "$csv"
 
+  if [ "$offered" -eq 0 ]; then
+    log "$path: no plugin updates available"
+    return 0
+  fi
   if [ "${#names[@]}" -eq 0 ]; then
-    log "$path: nothing eligible"
+    log "$path: nothing eligible ($offered update(s) all filtered out)"
     return 0
   fi
 
